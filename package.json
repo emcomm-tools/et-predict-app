@@ -2,7 +2,7 @@
   "name": "et-predict-app",
   "description": "A front-end application for voacap",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
     "author": {
     "name": "Gaston Gonzalez",
     "email": "info@thetechprepper.com"

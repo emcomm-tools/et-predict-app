@@ -166,6 +166,8 @@ function App() {
     setSearchResult(null);
     setLatLonError(null);
     setLatLonMarker(null);
+    setGridMarker(null);
+    setGridError(null);
 
     try {
       const response = await fetch(
@@ -194,6 +196,8 @@ function App() {
     setLatLonError(null);
     setSearchError(null);
     setSearchResult(null);
+    setGridMarker(null);
+    setGridError(null);
 
     const lat = parseFloat(latInput);
     const lon = parseFloat(lonInput);
@@ -391,8 +395,8 @@ function App() {
 
                 {/* Lat/Lon Search */}
                 <Flex direction="row" gap="size-200" alignItems="end">
-                  <TextField label="Latitude" placeholder="e.g., 33.45" value={latInput} onChange={setLatInput} width="50%" />
-                  <TextField label="Longitude" placeholder="e.g., -111.93" value={lonInput} onChange={setLonInput} width="50%" />
+                  <TextField label="Latitude" placeholder="33.45" value={latInput} onChange={setLatInput} width="50%" />
+                  <TextField label="Longitude" placeholder="-111.93" value={lonInput} onChange={setLonInput} width="50%" />
                   <Button variant="cta" onPress={handleLatLonSearch}>Go</Button>
                 </Flex>
 
@@ -400,7 +404,7 @@ function App() {
                 <Flex direction="row" gap="size-200" alignItems="end">
                   <TextField
                     label="Grid Square"
-                    placeholder="e.g., DM32 or DM32UV"
+                    placeholder="DM32 or DM32UV"
                     value={gridInput}
                     onChange={setGridInput}
                     width="100%"
@@ -450,9 +454,9 @@ function App() {
                   <View backgroundColor="gray-200" padding="size-100" borderRadius="regular" marginTop="size-200">
                     <Text><b>Grid Square</b></Text>
                     <br />
-                    <Text>Grid: {gridInput.toUpperCase()}</Text>
-                    <br />
                     <Text>Lat/Lon: {gridMarker[0].toFixed(5)}, {gridMarker[1].toFixed(5)}</Text>
+                    <br />
+                    <Text>Grid: {gridInput.toUpperCase()}</Text>
                     <br />
                     <Text>Distance: {haversineDistance(myPosition, gridMarker, 'mi').toFixed(2)} mi</Text>
                     <br />
