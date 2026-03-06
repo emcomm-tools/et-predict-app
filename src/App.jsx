@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionButton,
   Button,
@@ -35,6 +35,7 @@ import { isValidLatLon } from './utils';
 import { ADSB_SERVICE, AIRCRAFT_SERVICE, CALLSIGN_SERVICE, GEO_SERVICE, GRID_SERVICE, MAP_SERVICE, VOACAP_SERVICE } from './config';
 import MyPosition from './MyPosition.jsx';
 import { bearing, haversineDistance, maidenhead } from './utils/distance';
+import worldCities from './data/cities.json';
 import './App.css';
 
 function App() {
@@ -50,7 +51,7 @@ function App() {
 
   const [useFallback, setUseFallback] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [tileBaseUrl, setTileBaseUrl] = useState(null);
+  const [tileServices, setTileServices] = useState([]);
 
   // Callsign search state
   const [searchCallsign, setSearchCallsign] = useState('');
@@ -63,6 +64,12 @@ function App() {
   const [lonInput, setLonInput] = useState('');
   const [latLonError, setLatLonError] = useState(null);
   const [latLonMarker, setLatLonMarker] = useState(null);
+
+  // City search state
+  const [cityQuery, setCityQuery] = useState('');
+  const [cityResults, setCityResults] = useState([]);
+  const [cityMarker, setCityMarker] = useState(null);
+  const [selectedCity, setSelectedCity] = useState(null);
 
   // Maidenhead Grid Search
   const [gridInput, setGridInput] = useState('');
@@ -80,8 +87,10 @@ function App() {
   const [mode, setMode] = useState("js8"); // radio mode
 
   // Handle zoom level based on availability of offline regional vs world map
-  const getDefaultZoom = () => 
-    (tileBaseUrl?.includes('osm-world')) ? DEFAULT_ZOOM_WORLD : DEFAULT_ZOOM_REGION;
+  const getDefaultZoom = () => {
+    const hasRegional = tileServices.some(s => !s.url.includes('osm-world'));
+    return hasRegional ? DEFAULT_ZOOM_REGION : DEFAULT_ZOOM_WORLD;
+  };
 
   const handleReset = () => {
     setSearchCallsign('');
@@ -96,6 +105,11 @@ function App() {
     setGridInput('');
     setGridMarker(null);
     setGridError(null);
+
+    setCityQuery('');
+    setCityResults([]);
+    setCityMarker(null);
+    setSelectedCity(null);
 
     setVoacapResults(null);
     setVoacapError(null);
@@ -122,23 +136,49 @@ function App() {
     fetchDefaultGrid();
   }, []);
 
-  // Load map tile service info
+  // Load map tile service info — fetch all tilesets with their bounds
   useEffect(() => {
     async function fetchMapServices() {
       try {
         const response = await fetch(MAP_SERVICE);
         const services = await response.json();
-        if (services.length > 0) {
-          const url = services[0].url;
-          setTileBaseUrl(url);
-          setZoom(
-            url?.includes('osm-world') ? DEFAULT_ZOOM_WORLD : DEFAULT_ZOOM_REGION
-          );
-
-        } else {
+        if (services.length === 0) {
           setUseFallback(true);
           setZoom(DEFAULT_ZOOM_REGION);
+          return;
         }
+
+        // Fetch TileJSON metadata for each service to get bounds/zoom
+        const metadataPromises = services.map(async (svc) => {
+          try {
+            const res = await fetch(svc.url);
+            const meta = await res.json();
+            return {
+              url: svc.url,
+              tileUrl: meta.tiles?.[0] || `${svc.url}/tiles/{z}/{x}/{y}.png`,
+              bounds: meta.bounds || [-180, -90, 180, 90],
+              minzoom: meta.minzoom ?? 0,
+              maxzoom: meta.maxzoom ?? 22,
+              isWorld: svc.url.includes('osm-world'),
+            };
+          } catch {
+            return null;
+          }
+        });
+
+        const allMeta = (await Promise.all(metadataPromises)).filter(Boolean);
+
+        // Sort: regional tilesets first (smallest area), world last
+        allMeta.sort((a, b) => {
+          if (a.isWorld !== b.isWorld) return a.isWorld ? 1 : -1;
+          const areaA = (a.bounds[2] - a.bounds[0]) * (a.bounds[3] - a.bounds[1]);
+          const areaB = (b.bounds[2] - b.bounds[0]) * (b.bounds[3] - b.bounds[1]);
+          return areaA - areaB;
+        });
+
+        setTileServices(allMeta);
+        const hasRegional = allMeta.some(s => !s.isWorld);
+        setZoom(hasRegional ? DEFAULT_ZOOM_REGION : DEFAULT_ZOOM_WORLD);
       } catch (err) {
         console.error('Failed to fetch map services:', err);
         setUseFallback(true);
@@ -152,10 +192,37 @@ function App() {
       if (useFallback) {
         return `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
       }
-      if (!tileBaseUrl) return '';
-      return `${tileBaseUrl}/tiles/${z}/${x}/${y}.png`;
+      if (tileServices.length === 0) return '';
+
+      // Convert tile center to lat/lon
+      const n = Math.pow(2, z);
+      const lonDeg = ((x + 0.5) / n) * 360 - 180;
+      const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / n)));
+      const latDeg = (latRad * 180) / Math.PI;
+
+      // At low zoom (within world tileset range), always use world for consistency
+      const worldSvc = tileServices[tileServices.length - 1]; // world is sorted last
+      if (worldSvc && worldSvc.isWorld && z <= worldSvc.maxzoom) {
+        return worldSvc.tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+      }
+
+      // At higher zoom, find best regional tileset whose bounds contain the tile center
+      for (const svc of tileServices) {
+        const [west, south, east, north] = svc.bounds;
+        if (z >= svc.minzoom && z <= svc.maxzoom &&
+            lonDeg >= west && lonDeg <= east &&
+            latDeg >= south && latDeg <= north) {
+          return svc.tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+        }
+      }
+
+      // No match — use world even if zoom exceeds its maxzoom (overzoom)
+      if (worldSvc) {
+        return worldSvc.tileUrl.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+      }
+      return '';
     },
-    [tileBaseUrl, useFallback]
+    [tileServices, useFallback]
   );
 
   // Handle callsign search
@@ -217,11 +284,60 @@ function App() {
     setZoom(getDefaultZoom());
   };
 
+  // City search — client-side fuzzy match on 5985 world cities
+  const handleCitySearch = (query) => {
+    setCityQuery(query);
+    if (query.length < 2) {
+      setCityResults([]);
+      return;
+    }
+    const q = query.toLowerCase();
+    const matches = worldCities
+      .filter(c => c.a.toLowerCase().includes(q) || c.n.toLowerCase().includes(q))
+      .slice(0, 12);
+    setCityResults(matches);
+  };
+
+  const handleCitySelect = (city) => {
+    const coords = [city.t, city.g];
+    setCityMarker(coords);
+    setSelectedCity(city);
+    setCityQuery(city.n);
+    setCityResults([]);
+    setCenter(coords);
+    setZoom(getDefaultZoom());
+    // Clear other search results
+    setSearchResult(null);
+    setSearchError(null);
+    setLatLonMarker(null);
+    setLatLonError(null);
+    setGridMarker(null);
+    setGridError(null);
+  };
+
+  // Map click handler — right-click sets destination lat/lon
+  const handleMapClick = ({ event, latLng }) => {
+    if (!latLng) return;
+    const [lat, lon] = latLng;
+    setLatInput(lat.toFixed(4));
+    setLonInput(lon.toFixed(4));
+    setLatLonMarker([lat, lon]);
+    setCenter([lat, lon]);
+    // Clear other search results
+    setSearchResult(null);
+    setSearchError(null);
+    setCityMarker(null);
+    setSelectedCity(null);
+    setGridMarker(null);
+    setGridError(null);
+  };
+
   // Determine target coordinates
   const getTargetCoords = () => {
     if (searchResult) return [searchResult.lat, searchResult.lon];
     if (latLonMarker) return latLonMarker;
     if (gridMarker) return gridMarker;
+    if (cityMarker) return cityMarker;
     return null;
   };
 
@@ -381,7 +497,7 @@ function App() {
                 {/* Callsign Search */}
                 <Flex direction="row" gap="size-200" alignItems="end">
                   <SearchField
-                    label="Callsign Lookup"
+                    label="Callsign Lookup (US and Canadian only)"
                     placeholder="callsign"
                     value={searchCallsign}
                     onChange={setSearchCallsign}
@@ -412,6 +528,40 @@ function App() {
                   <Button variant="cta" onPress={handleGridSearch} isDisabled={isGridSearching} >
                    {isGridSearching ? 'Searching...' : 'Go'}
                   </Button>
+                </Flex>
+
+                {/* City Search */}
+                <Flex direction="column" gap="size-50">
+                  <TextField
+                    label="City Search"
+                    placeholder="London, Paris, Montreal..."
+                    value={cityQuery}
+                    onChange={handleCitySearch}
+                    width="100%"
+                  />
+                  {cityResults.length > 0 && (
+                    <div style={{
+                      maxHeight: '180px', overflowY: 'auto',
+                      border: '1px solid #555', borderRadius: '4px',
+                      background: '#2a2a2a'
+                    }}>
+                      {cityResults.map((city, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            padding: '6px 8px', cursor: 'pointer',
+                            borderBottom: '1px solid #444', fontSize: '13px',
+                            color: '#e0e0e0'
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#3a3a5a'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                          onClick={() => handleCitySelect(city)}
+                        >
+                          {city.n}, {city.c} <span style={{ color: '#888' }}>({(city.p / 1000).toFixed(0)}K)</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </Flex>
 
                 {gridError && ( <Text UNSAFE_style={{ color: 'red' }}>{gridError}</Text>)}
@@ -464,8 +614,23 @@ function App() {
                   </View>
                 )}
 
+                {/* City search result */}
+                {selectedCity && cityMarker && (
+                  <View backgroundColor="gray-200" padding="size-100" borderRadius="regular" marginTop="size-200">
+                    <Text><b>{selectedCity.n}</b>, {selectedCity.c}</Text>
+                    <br />
+                    <Text>Lat/Lon: {cityMarker[0].toFixed(4)}, {cityMarker[1].toFixed(4)}</Text>
+                    <br />
+                    <Text>Grid: {maidenhead(cityMarker)}</Text>
+                    <br />
+                    <Text>Distance: {haversineDistance(myPosition, cityMarker, 'mi').toFixed(2)} mi</Text>
+                    <br />
+                    <Text>Bearing: {bearing(myPosition, cityMarker).toFixed(1)}°</Text>
+                  </View>
+                )}
+
                 {/* Prediction parameters: power and mode */}
-                {(searchResult || latLonMarker || gridMarker) && (
+                {(searchResult || latLonMarker || gridMarker || cityMarker) && (
                   <Flex direction="row" gap="size-200" alignItems="end">
                     <Picker
                       label="Power (Watts)"
@@ -492,8 +657,8 @@ function App() {
 		)}
 
                 {/* Predict Button + Modal */}
-                {(searchResult || latLonMarker || gridMarker) && (
-	
+                {(searchResult || latLonMarker || gridMarker || cityMarker) && (
+
                   <DialogTrigger onOpenChange={handlePredict}>
                     <Button variant="cta" isDisabled={isPredicting}>
                       {isPredicting ? 'Predicting...' : 'Predict'}
@@ -741,11 +906,12 @@ function App() {
               center={center}
               zoom={zoom}
               minZoom={2}
-              maxZoom={11}
+              maxZoom={12}
               onBoundsChanged={({ center, zoom }) => {
                 setCenter(center);
                 setZoom(zoom);
               }}
+              onClick={handleMapClick}
             >
               <ZoomControl />
               <Marker anchor={myPosition} />
@@ -759,6 +925,7 @@ function App() {
               {latLonMarker && <Marker anchor={latLonMarker} color="#007aff" />}
 
               {gridMarker && <Marker anchor={gridMarker} color="#007aff" />}
+              {cityMarker && <Marker anchor={cityMarker} color="#e68a00" />}
             </Map>
           </View>
         </Flex>
