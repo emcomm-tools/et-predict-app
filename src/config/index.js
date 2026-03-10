@@ -11,3 +11,6 @@ export const GEO_SERVICE = `${API_HOST}/api/geo/position`;
 export const GRID_SERVICE = `${API_HOST}/api/geo/grid`;
 export const VOACAP_SERVICE = `${API_HOST}/api/voacap`;
 export const MAP_SERVICE = `${MAP_HOST}/services`;
+
+// Tile downloader microservice (launched by et-predict alongside mbtileserver)
+export const TILE_DOWNLOADER = 'http://127.0.0.1:5056';

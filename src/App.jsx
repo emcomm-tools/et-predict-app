@@ -27,12 +27,13 @@ import {
   View,
   defaultTheme,
 } from '@adobe/react-spectrum';
+import Download from '@spectrum-icons/workflow/Download';
 import Minimize from '@spectrum-icons/workflow/Minimize';
 import Refresh from '@spectrum-icons/workflow/Refresh';
 import ShowMenu from '@spectrum-icons/workflow/ShowMenu';
 import { Map, Marker, ZoomControl } from 'pigeon-maps';
 import { isValidLatLon } from './utils';
-import { ADSB_SERVICE, AIRCRAFT_SERVICE, CALLSIGN_SERVICE, GEO_SERVICE, GRID_SERVICE, MAP_SERVICE, VOACAP_SERVICE } from './config';
+import { ADSB_SERVICE, AIRCRAFT_SERVICE, CALLSIGN_SERVICE, GEO_SERVICE, GRID_SERVICE, MAP_SERVICE, TILE_DOWNLOADER, VOACAP_SERVICE } from './config';
 import MyPosition from './MyPosition.jsx';
 import { bearing, haversineDistance, maidenhead } from './utils/distance';
 import worldCities from './data/cities.json';
@@ -117,6 +118,23 @@ function App() {
     setZoom(getDefaultZoom());
   };
 
+  // Open tile downloader popup; refresh map services when it closes
+  const handleDownloadMaps = () => {
+    const popup = window.open(
+      TILE_DOWNLOADER,
+      'et-tile-downloader',
+      'width=600,height=700'
+    );
+    if (popup) {
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          fetchMapServices();
+        }
+      }, 1000);
+    }
+  };
+
   // Load default location
   useEffect(() => {
     const fetchDefaultGrid = async () => {
@@ -136,56 +154,59 @@ function App() {
     fetchDefaultGrid();
   }, []);
 
-  // Load map tile service info — fetch all tilesets with their bounds
-  useEffect(() => {
-    async function fetchMapServices() {
-      try {
-        const response = await fetch(MAP_SERVICE);
-        const services = await response.json();
-        if (services.length === 0) {
-          setUseFallback(true);
-          setZoom(DEFAULT_ZOOM_REGION);
-          return;
-        }
-
-        // Fetch TileJSON metadata for each service to get bounds/zoom
-        const metadataPromises = services.map(async (svc) => {
-          try {
-            const res = await fetch(svc.url);
-            const meta = await res.json();
-            return {
-              url: svc.url,
-              tileUrl: meta.tiles?.[0] || `${svc.url}/tiles/{z}/{x}/{y}.png`,
-              bounds: meta.bounds || [-180, -90, 180, 90],
-              minzoom: meta.minzoom ?? 0,
-              maxzoom: meta.maxzoom ?? 22,
-              isWorld: svc.url.includes('osm-world'),
-            };
-          } catch {
-            return null;
-          }
-        });
-
-        const allMeta = (await Promise.all(metadataPromises)).filter(Boolean);
-
-        // Sort: regional tilesets first (smallest area), world last
-        allMeta.sort((a, b) => {
-          if (a.isWorld !== b.isWorld) return a.isWorld ? 1 : -1;
-          const areaA = (a.bounds[2] - a.bounds[0]) * (a.bounds[3] - a.bounds[1]);
-          const areaB = (b.bounds[2] - b.bounds[0]) * (b.bounds[3] - b.bounds[1]);
-          return areaA - areaB;
-        });
-
-        setTileServices(allMeta);
-        const hasRegional = allMeta.some(s => !s.isWorld);
-        setZoom(hasRegional ? DEFAULT_ZOOM_REGION : DEFAULT_ZOOM_WORLD);
-      } catch (err) {
-        console.error('Failed to fetch map services:', err);
+  // Fetch all tilesets with their bounds from mbtileserver
+  const fetchMapServices = useCallback(async () => {
+    try {
+      const response = await fetch(MAP_SERVICE);
+      const services = await response.json();
+      if (services.length === 0) {
         setUseFallback(true);
+        setZoom(DEFAULT_ZOOM_REGION);
+        return;
       }
+
+      // Fetch TileJSON metadata for each service to get bounds/zoom
+      const metadataPromises = services.map(async (svc) => {
+        try {
+          const res = await fetch(svc.url);
+          const meta = await res.json();
+          return {
+            url: svc.url,
+            tileUrl: meta.tiles?.[0] || `${svc.url}/tiles/{z}/{x}/{y}.png`,
+            bounds: meta.bounds || [-180, -90, 180, 90],
+            minzoom: meta.minzoom ?? 0,
+            maxzoom: meta.maxzoom ?? 22,
+            isWorld: svc.url.includes('osm-world'),
+          };
+        } catch {
+          return null;
+        }
+      });
+
+      const allMeta = (await Promise.all(metadataPromises)).filter(Boolean);
+
+      // Sort: regional tilesets first (smallest area), world last
+      allMeta.sort((a, b) => {
+        if (a.isWorld !== b.isWorld) return a.isWorld ? 1 : -1;
+        const areaA = (a.bounds[2] - a.bounds[0]) * (a.bounds[3] - a.bounds[1]);
+        const areaB = (b.bounds[2] - b.bounds[0]) * (b.bounds[3] - b.bounds[1]);
+        return areaA - areaB;
+      });
+
+      setTileServices(allMeta);
+      setUseFallback(false);
+      const hasRegional = allMeta.some(s => !s.isWorld);
+      setZoom(hasRegional ? DEFAULT_ZOOM_REGION : DEFAULT_ZOOM_WORLD);
+    } catch (err) {
+      console.error('Failed to fetch map services:', err);
+      setUseFallback(true);
     }
-    fetchMapServices();
   }, []);
+
+  // Load map tile services on mount
+  useEffect(() => {
+    fetchMapServices();
+  }, [fetchMapServices]);
 
   const mapTiler = useCallback(
     (x, y, z, dpr) => {
@@ -492,6 +513,10 @@ function App() {
 		    <Refresh />
 		    <Text>Reset</Text>
 		  </ActionButton>
+                  <ActionButton onPress={handleDownloadMaps} aria-label="Download Maps">
+                    <Download />
+                    <Text>Maps</Text>
+                  </ActionButton>
                 </Flex>
 
                 {/* Callsign Search */}
@@ -900,7 +925,7 @@ function App() {
             </View>
 
             <Map
-              attributionPrefix="The Tech Prepper | Pigeon Maps"
+              attributionPrefix="Tracestrack | Pigeon Maps"
               provider={mapTiler}
               height="100%"
               center={center}
