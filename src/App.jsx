@@ -925,7 +925,7 @@ function App() {
             </View>
 
             <Map
-              attributionPrefix="VA2OPS | KT7RUN The Tech Prepper | Pigeon Maps | Tracestrack contributors"
+              attributionPrefix="VA2OPS | KT7RUN The Tech Prepper | Pigeon Maps | &copy; Tracestrack Maps contributors"
               provider={mapTiler}
               height="100%"
               center={center}
